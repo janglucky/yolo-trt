@@ -97,7 +97,7 @@ struct Binding {
 };
 
 struct Object {
-    cv::RotatedRect rect;
+    cv::Rect rect;
     int              label = 0;
     float            prob  = 0.0;
 };

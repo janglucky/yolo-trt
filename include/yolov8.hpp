@@ -288,7 +288,7 @@ void YOLOv8::infer()
     cudaStreamSynchronize(this->stream);
 }
 
-void YOLOv8::postprocess(std::vector<Object>& objs, float score_thres = 0.65,float iou_thres=0.85,int topk=100, int num_labels=80)
+void YOLOv8::postprocess(std::vector<Object>& objs, float score_thres = 0.69,float iou_thres=0.85,int topk=100, int num_labels=80)
 {
     objs.clear();
     auto num_channels = this->output_bindings[0].dims.d[1];
@@ -300,7 +300,7 @@ void YOLOv8::postprocess(std::vector<Object>& objs, float score_thres = 0.65,flo
     auto& height   = this->pparam.height;
     auto& ratio    = this->pparam.ratio;
 
-    std::vector< cv::RotatedRect > bboxes;
+    std::vector<cv::Rect> bboxes;
     std::vector<float>           scores;
     std::vector<int>             labels;
     std::vector<int>             indices;
@@ -316,10 +316,16 @@ void YOLOv8::postprocess(std::vector<Object>& objs, float score_thres = 0.65,flo
 
         float score = *max_s_ptr;
         if (score > score_thres) {
-            float x = (*bboxes_ptr++ - dw) * ratio;
-            float y = (*bboxes_ptr++ - dh) * ratio;
-            float w = (*bboxes_ptr++) * ratio;
-            float h = (*bboxes_ptr) * ratio;
+            float center_x = *bboxes_ptr++;
+            float center_y = *bboxes_ptr++;
+            float w = *bboxes_ptr++;
+            float h = *bboxes_ptr;
+
+            // 将点模型空间（中心点+宽高）映射到图像空间（左上角+宽高）
+            float x = (center_x - w /2 - dw) * ratio; 
+            float y = (center_y - h /2 - dh) * ratio;
+            w = w * ratio;
+            h = h * ratio;
 
             if (w < 1.f || h < 1.f) {
                 continue;
@@ -330,14 +336,7 @@ void YOLOv8::postprocess(std::vector<Object>& objs, float score_thres = 0.65,flo
             w = clamp(w, 0.f, width);
             h = clamp(h, 0.f, height);
 
-            float angle = *angle_ptr / CV_PI * 180.f;
-
-            cv::RotatedRect bbox;
-            bbox.center.x    = x;
-            bbox.center.y    = y;
-            bbox.size.width  = w;
-            bbox.size.height = h;
-            bbox.angle       = angle;
+            cv::Rect bbox(x,y,w,h);
 
             bboxes.push_back(bbox);
             labels.push_back(std::distance(scores_ptr, max_s_ptr));
@@ -369,25 +368,24 @@ void YOLOv8::draw_objects(const cv::Mat&                                image,
 {
     res = image.clone();
     for (auto& obj : objs) {
-        cv::Mat points;
-        cv::boxPoints(obj.rect, points);
         cv::Scalar color = cv::Scalar(COLORS[obj.label][0], COLORS[obj.label][1], COLORS[obj.label][2]);
-        points.convertTo(points, CV_32S);
-        cv::polylines(res, points, true, color, 2);
+        cv::rectangle(res, obj.rect, color, 2);
 
         char text[256];
-        sprintf(text, "person %.1f%%", obj.prob * 100);
+        sprintf(text, "%s %.1f%%", CLASS_NAMES[obj.label].c_str(), obj.prob * 100);
 
         int      baseLine   = 0;
         cv::Size label_size = cv::getTextSize(text, cv::FONT_HERSHEY_SIMPLEX, 0.4, 1, &baseLine);
 
-        int x = (int)obj.rect.center.x;
-        int y = (int)obj.rect.center.y + 1;
+        int x = (int)obj.rect.x;
+        int y = (int)obj.rect.y + 1;
 
-        if (y > res.rows)
+        if (y > res.rows) {
             y = res.rows;
+        }
 
         cv::rectangle(res, cv::Rect(x, y, label_size.width, label_size.height + baseLine), {0, 0, 255}, -1);
+
         cv::putText(res, text, cv::Point(x, y + label_size.height), cv::FONT_HERSHEY_SIMPLEX, 0.4, {255, 255, 255}, 1);
     }
 }
