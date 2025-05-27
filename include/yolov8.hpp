@@ -20,12 +20,19 @@ public:
     void                 letterbox(const cv::Mat& image, cv::Mat& out, cv::Size& size);
     void                 infer();
     void                 postprocess(std::vector<Object>& objs,float score_thres, float iou_thres, int topk, int num_labels);
-    void                 postprocess_seg(std::vector<Object>& objs,float score_thres, float iou_thres, int topk, int num_labels, int seg_channels, int seg_h, int seg_w);
+    void                 postprocess_seg(std::vector<Object>& objs,float score_thres, float iou_thres, int topk, int num_labels);
     static void          draw_objects(const cv::Mat&                                image,
                                       cv::Mat&                                      res,
                                       const std::vector<Object>&                    objs,
                                       const std::vector<std::string>&               CLASS_NAMES,
                                       const std::vector<std::vector<unsigned int>>& COLORS);
+    static void          draw_masks(const cv::Mat&                                image,
+                                    cv::Mat&                                      res,
+                                    const std::vector<Object>&                    objs,
+                                    const std::vector<std::string>&               CLASS_NAMES,
+                                    const std::vector<std::vector<unsigned int>>& COLORS,
+                                    const std::vector<std::vector<unsigned int>>& MASK_COLORS);
+    
     int                  num_bindings;
     int                  num_inputs  = 0;
     int                  num_outputs = 0;
@@ -289,15 +296,17 @@ void YOLOv8::infer()
     cudaStreamSynchronize(this->stream);
 }
 
-void YOLOv8::seg_postprocess(std::vector<Object>& objs, float score_thres = 0.69,float iou_thres=0.85,int topk=100, int num_labels=80)
+void YOLOv8::postprocess_seg(std::vector<Object>& objs, float score_thres = 0.69,float iou_thres=0.85,int topk=100, int num_labels=80)
 {
     objs.clear();
+    auto input_h      = this->input_bindings[0].dims.d[2];
+    auto input_w      = this->input_bindings[0].dims.d[3];
     auto num_channels = this->output_bindings[0].dims.d[1];
     auto num_anchors  = this->output_bindings[0].dims.d[2];
 
-    auto seg_channels = this->output_bindings[1].dims.d[1]
-    auto seg_h = this->output_bindings[1].dims.d[2]
-    auto seg_w = this->output_bindings[1].dims.d[3]
+    auto seg_channels = this->output_bindings[1].dims.d[1];
+    auto seg_h = this->output_bindings[1].dims.d[2];
+    auto seg_w = this->output_bindings[1].dims.d[3];
 
     auto& dw       = this->pparam.dw;
     auto& dh       = this->pparam.dh;
@@ -312,14 +321,14 @@ void YOLOv8::seg_postprocess(std::vector<Object>& objs, float score_thres = 0.69
     std::vector<cv::Mat>         mask_confs;
 
     cv::Mat output = cv::Mat(num_channels, num_anchors, CV_32F, static_cast<float*>(this->host_ptrs[0]));
-    cv::Mat protos = cv::Mat(seg_numchannels, seg_h * seg_w, CV_32F, static_cast<float*>(this->host_ptrs[1]));
+    cv::Mat protos = cv::Mat(seg_channels, seg_h * seg_w, CV_32F, static_cast<float*>(this->host_ptrs[1]));
     output         = output.t();
     for (int i = 0; i < num_anchors; i++) {
         auto row_ptr    = output.row(i).ptr<float>();
         auto bboxes_ptr = row_ptr;
         auto scores_ptr = row_ptr + 4;
         auto max_s_ptr  = std::max_element(scores_ptr, scores_ptr + num_labels);
-        auto angle_ptr  = row_ptr + 4 + num_labels;
+        auto maskconf_ptr  = row_ptr + 4 + num_labels;
 
         float score = *max_s_ptr;
         if (score > score_thres) {
@@ -344,9 +353,9 @@ void YOLOv8::seg_postprocess(std::vector<Object>& objs, float score_thres = 0.69
             h = clamp(h, 0.f, height);
 
             cv::Rect bbox(x,y,w,h);
-
-            cv::Mat mask_conf = cv::Mat(1, seg_channels, CV_32F, ++ptr);
-
+            cv::Mat mask_conf = cv::Mat(1, seg_channels, CV_32F, maskconf_ptr);
+            
+            mask_confs.push_back(mask_conf);
             bboxes.push_back(bbox);
             labels.push_back(std::distance(scores_ptr, max_s_ptr));
             scores.push_back(score);
@@ -355,6 +364,7 @@ void YOLOv8::seg_postprocess(std::vector<Object>& objs, float score_thres = 0.69
 
     cv::dnn::NMSBoxes(bboxes, scores, score_thres, iou_thres, indices);
 
+    cv::Mat masks;
     int cnt = 0;
     for (auto& i : indices) {
         if (cnt >= topk) {
@@ -364,8 +374,32 @@ void YOLOv8::seg_postprocess(std::vector<Object>& objs, float score_thres = 0.69
         obj.rect  = bboxes[i];
         obj.prob  = scores[i];
         obj.label = labels[i];
+        masks.push_back(mask_confs[i]);
         objs.push_back(obj);
         cnt += 1;
+    }
+
+    if(!masks.empty()) {
+
+        cv::Mat matmulRes = (masks * protos).t();
+        cv::Mat maskMat = matmulRes.reshape(indices.size(), {seg_h, seg_w});
+
+        std::vector<cv::Mat> maskChannels;
+        cv::split(maskMat, maskChannels);
+        int scale_dw = dw / input_w * seg_w;
+        int scale_dh = dh / input_h * seg_h;
+
+        cv::Rect roi(scale_dw, scale_dh, seg_w - 2 * scale_dw, seg_h - 2 * scale_dh);
+
+        for (int i = 0; i < indices.size(); i++) {
+            cv::Mat dest, mask;
+            cv::exp(-maskChannels[i], dest);
+            dest = 1.0 / (1.0 + dest);
+            dest = dest(roi);
+            cv::resize(dest, mask, cv::Size((int)width, (int)height), cv::INTER_LINEAR);
+            objs[i].mask = mask(objs[i].rect) > 0.5f;
+        }
+
     }
 }
 
@@ -394,7 +428,6 @@ void YOLOv8::postprocess(std::vector<Object>& objs, float score_thres = 0.69,flo
         auto bboxes_ptr = row_ptr;
         auto scores_ptr = row_ptr + 4;
         auto max_s_ptr  = std::max_element(scores_ptr, scores_ptr + num_labels);
-        auto angle_ptr  = row_ptr + 4 + num_labels;
 
         float score = *max_s_ptr;
         if (score > score_thres) {
@@ -440,6 +473,43 @@ void YOLOv8::postprocess(std::vector<Object>& objs, float score_thres = 0.69,flo
         objs.push_back(obj);
         cnt += 1;
     }
+}
+
+void YOLOv8::draw_masks(const cv::Mat&                                image,
+                       cv::Mat&                                      res,
+                       const std::vector<Object>&                    objs,
+                       const std::vector<std::string>&               CLASS_NAMES,
+                       const std::vector<std::vector<unsigned int>>& COLORS,
+                       const std::vector<std::vector<unsigned int>>& MASK_COLORS)
+{
+    res = image.clone();
+    cv::Mat mask = image.clone();
+    for (auto& obj : objs) {
+        int idx = obj.label;
+        cv::Scalar color = cv::Scalar(COLORS[idx][0], COLORS[idx][1], COLORS[idx][2]);
+        cv::Scalar mask_color =
+            cv::Scalar(MASK_COLORS[idx % 20][0], MASK_COLORS[idx % 20][1], MASK_COLORS[idx % 20][2]);
+        cv::rectangle(res, obj.rect, color, 2);
+
+        char text[256];
+        sprintf(text, "%s %.1f%%", CLASS_NAMES[obj.label].c_str(), obj.prob * 100);
+        mask(obj.rect).setTo(mask_color, obj.mask);
+
+        int      baseLine   = 0;
+        cv::Size label_size = cv::getTextSize(text, cv::FONT_HERSHEY_SIMPLEX, 0.4, 1, &baseLine);
+
+        int x = (int)obj.rect.x;
+        int y = (int)obj.rect.y + 1;
+
+        if (y > res.rows) {
+            y = res.rows;
+        }
+
+        cv::rectangle(res, cv::Rect(x, y, label_size.width, label_size.height + baseLine), {0, 0, 255}, -1);
+
+        cv::putText(res, text, cv::Point(x, y + label_size.height), cv::FONT_HERSHEY_SIMPLEX, 0.4, {255, 255, 255}, 1);
+    }
+    cv::addWeighted(res, 0.5, mask, 0.8, 1, res);
 }
 
 void YOLOv8::draw_objects(const cv::Mat&                                image,

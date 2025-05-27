@@ -37,18 +37,44 @@ const std::vector<std::vector<unsigned int>> COLORS = {
     {73, 73, 73},    {109, 109, 109}, {146, 146, 146}, {182, 182, 182}, {219, 219, 219}, {0, 114, 189},
     {80, 183, 189},  {128, 128, 0}};
 
+const std::vector<std::vector<unsigned int>> MASK_COLORS = {
+    {255, 56, 56},  {255, 157, 151}, {255, 112, 31}, {255, 178, 29}, {207, 210, 49},  {72, 249, 10}, {146, 204, 23},
+    {61, 219, 134}, {26, 147, 52},   {0, 212, 187},  {44, 153, 168}, {0, 194, 255},   {52, 69, 147}, {100, 115, 255},
+    {0, 24, 236},   {132, 56, 255},  {82, 0, 133},   {203, 56, 255}, {255, 149, 200}, {255, 55, 199}};
+
+enum TASK{
+    DETE,
+    SEGM,
+    POSE,
+    UNKOWN
+};
+
+int get_task(std::string t) {
+    if(t == "det") {
+        return DETE;
+    } else if(t == "seg") {
+        return SEGM;
+    } else if(t == "pose") {
+        return POSE;
+    } else {
+        return UNKOWN;
+    }
+}
+
 int main(int argc, char** argv)
 {
-    if (argc != 3) {
-        fprintf(stderr, "Usage: %s [engine_path] [image_path/image_dir/video_path]\n", argv[0]);
+    if (argc != 5) {
+        fprintf(stderr, "Usage: %s [det/seg/pose] [engine_path] [image_path/image_dir/video_path] [device]\n", argv[0]);
         return -1;
     }
 
+    const int device = atoi(argv[4]);
     // cuda:0
-    cudaSetDevice(0);
+    cudaSetDevice(device);
 
-    const std::string engine_file_path{argv[1]};
-    const fs::path    path{argv[2]};
+    const std::string task(argv[1]);
+    const std::string engine_file_path{argv[2]};
+    const fs::path    path{argv[3]};
 
     std::vector<std::string> imagePathList;
     bool                     isVideo{false};
@@ -78,7 +104,7 @@ int main(int argc, char** argv)
     cv::Size            size = cv::Size{640, 640};
     std::vector<Object> objs;
 
-    cv::namedWindow("result", cv::WINDOW_AUTOSIZE);
+    // cv::namedWindow("result", cv::WINDOW_AUTOSIZE);
 
     if (isVideo) {
         cv::VideoCapture cap(path);
@@ -93,8 +119,19 @@ int main(int argc, char** argv)
             auto start = std::chrono::system_clock::now();
             yolov8->infer();
             auto end = std::chrono::system_clock::now();
-            yolov8->postprocess(objs);
-            yolov8->draw_objects(image, res, objs, CLASS_NAMES, COLORS);
+            switch (get_task(task))
+            {
+            case DETE:
+                yolov8->postprocess(objs);
+                yolov8->draw_objects(image, res, objs, CLASS_NAMES, COLORS);
+                break;
+            case SEGM:
+                yolov8->postprocess_seg(objs);
+                yolov8->draw_masks(image, res, objs, CLASS_NAMES, COLORS, MASK_COLORS);
+            default:
+                break;
+            }
+           
             auto tc = (double)std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.;
             printf("cost %2.4lf ms\n", tc);
             cv::imshow("result", res);
@@ -111,8 +148,18 @@ int main(int argc, char** argv)
             auto start = std::chrono::system_clock::now();
             yolov8->infer();
             auto end = std::chrono::system_clock::now();
-            yolov8->postprocess(objs);
-            yolov8->draw_objects(image, res, objs, CLASS_NAMES, COLORS);
+            switch (get_task(task))
+            {
+            case DETE:
+                yolov8->postprocess(objs);
+                yolov8->draw_objects(image, res, objs, CLASS_NAMES, COLORS);
+                break;
+            case SEGM:
+                yolov8->postprocess_seg(objs);
+                yolov8->draw_masks(image, res, objs, CLASS_NAMES, COLORS, MASK_COLORS);
+            default:
+                break;
+            }
             auto tc = (double)std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.;
             printf("cost %2.4lf ms\n", tc);
             const auto outputName = p.substr(0, p.find_last_of('.')) + "_annotated.jpg";
@@ -120,7 +167,7 @@ int main(int argc, char** argv)
 
         }
     }
-    cv::destroyAllWindows();
+    // cv::destroyAllWindows();
     delete yolov8;
     return 0;
 }
