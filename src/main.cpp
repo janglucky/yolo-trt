@@ -42,6 +42,64 @@ const std::vector<std::vector<unsigned int>> MASK_COLORS = {
     {61, 219, 134}, {26, 147, 52},   {0, 212, 187},  {44, 153, 168}, {0, 194, 255},   {52, 69, 147}, {100, 115, 255},
     {0, 24, 236},   {132, 56, 255},  {82, 0, 133},   {203, 56, 255}, {255, 149, 200}, {255, 55, 199}};
 
+const std::vector<std::vector<unsigned int>> KPS_COLORS = {{0, 255, 0},
+                                                           {0, 255, 0},
+                                                           {0, 255, 0},
+                                                           {0, 255, 0},
+                                                           {0, 255, 0},
+                                                           {255, 128, 0},
+                                                           {255, 128, 0},
+                                                           {255, 128, 0},
+                                                           {255, 128, 0},
+                                                           {255, 128, 0},
+                                                           {255, 128, 0},
+                                                           {51, 153, 255},
+                                                           {51, 153, 255},
+                                                           {51, 153, 255},
+                                                           {51, 153, 255},
+                                                           {51, 153, 255},
+                                                           {51, 153, 255}};
+
+const std::vector<std::vector<unsigned int>> SKELETON = {{16, 14},
+                                                         {14, 12},
+                                                         {17, 15},
+                                                         {15, 13},
+                                                         {12, 13},
+                                                         {6, 12},
+                                                         {7, 13},
+                                                         {6, 7},
+                                                         {6, 8},
+                                                         {7, 9},
+                                                         {8, 10},
+                                                         {9, 11},
+                                                         {2, 3},
+                                                         {1, 2},
+                                                         {1, 3},
+                                                         {2, 4},
+                                                         {3, 5},
+                                                         {4, 6},
+                                                         {5, 7}};
+
+const std::vector<std::vector<unsigned int>> LIMB_COLORS = {{51, 153, 255},
+                                                            {51, 153, 255},
+                                                            {51, 153, 255},
+                                                            {51, 153, 255},
+                                                            {255, 51, 255},
+                                                            {255, 51, 255},
+                                                            {255, 51, 255},
+                                                            {255, 128, 0},
+                                                            {255, 128, 0},
+                                                            {255, 128, 0},
+                                                            {255, 128, 0},
+                                                            {255, 128, 0},
+                                                            {0, 255, 0},
+                                                            {0, 255, 0},
+                                                            {0, 255, 0},
+                                                            {0, 255, 0},
+                                                            {0, 255, 0},
+                                                            {0, 255, 0},
+                                                            {0, 255, 0}};
+
 enum TASK{
     DETE,
     SEGM,
@@ -104,7 +162,7 @@ int main(int argc, char** argv)
     cv::Size            size = cv::Size{640, 640};
     std::vector<Object> objs;
 
-    // cv::namedWindow("result", cv::WINDOW_AUTOSIZE);
+    cv::namedWindow("result", cv::WINDOW_AUTOSIZE);
 
     if (isVideo) {
         cv::VideoCapture cap(path);
@@ -128,6 +186,10 @@ int main(int argc, char** argv)
             case SEGM:
                 yolov8->postprocess_seg(objs);
                 yolov8->draw_masks(image, res, objs, CLASS_NAMES, COLORS, MASK_COLORS);
+                break;
+            case POSE:
+                yolov8->postprocess_pose(objs);
+                yolov8->draw_poses(image, res, objs, SKELETON, KPS_COLORS, LIMB_COLORS);
             default:
                 break;
             }
@@ -157,6 +219,11 @@ int main(int argc, char** argv)
             case SEGM:
                 yolov8->postprocess_seg(objs);
                 yolov8->draw_masks(image, res, objs, CLASS_NAMES, COLORS, MASK_COLORS);
+                break;
+            case POSE:
+                yolov8->postprocess_pose(objs);
+                yolov8->draw_poses(image, res, objs, SKELETON, KPS_COLORS, LIMB_COLORS);
+                break;
             default:
                 break;
             }
@@ -167,7 +234,7 @@ int main(int argc, char** argv)
 
         }
     }
-    // cv::destroyAllWindows();
+    cv::destroyAllWindows();
     delete yolov8;
     return 0;
 }

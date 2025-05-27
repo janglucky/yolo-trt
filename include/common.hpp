@@ -97,10 +97,11 @@ struct Binding {
 };
 
 struct Object {
-    cv::Rect         rect;
-    int              label = 0;
-    float            prob  = 0.0;
-    cv::Mat          mask;
+    cv::Rect           rect;
+    int                label = 0;
+    float              prob  = 0.0;
+    cv::Mat            mask;
+    std::vector<float> kps;
 };
 
 struct PreParam {
