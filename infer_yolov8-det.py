@@ -8,37 +8,7 @@ import torchvision
 import numpy as np
 from config import CLASSES_DET, COLORS
 from models.torch_utils import det_postprocess
-from models.utils import blob, letterbox, path_to_list
-
-
-def xywh2xyxy(x):
-    # Convert nx4 boxes from [x, y, w, h] to [x1, y1, x2, y2] where xy1=top-left, xy2=bottom-right
-    y = torch.zeros(x.shape).to(x.device)
-    y[:, 0] = x[:, 0] - x[:, 2] / 2  # top left x
-    y[:, 1] = x[:, 1] - x[:, 3] / 2  # top left y
-    y[:, 2] = x[:, 0] + x[:, 2] / 2  # bottom right x
-    y[:, 3] = x[:, 1] + x[:, 3] / 2  # bottom right y
-    return y
-
-def postprocess(preds, score_thr=0.69):
-    preds = preds.squeeze().permute(1,0)
-    decoded_bboxes = preds[:, :4]
-    print(decoded_bboxes)
-    decoded_bboxes = xywh2xyxy(decoded_bboxes)
-    cls_scores = preds[:,4:]
-    cls_score_id = cls_scores.amax(1) > score_thr
-
-    ths_scores = cls_scores[cls_score_id,:] # torch.szie[num,80]
-    thr_bboxes = decoded_bboxes[cls_score_id,:] # torch.szie[num,4]
-
-    ths_conf, thr_cls = ths_scores.max(1, keepdim=False) #torch.szie[num],torch.szie[num]
-    keep_idxs = torchvision.ops.nms(thr_bboxes, ths_conf, iou_threshold=0.6)
-    scores = ths_conf[keep_idxs].cpu().detach()
-    labels = thr_cls[keep_idxs].cpu().detach()
-    bboxes = thr_bboxes[keep_idxs].cpu().detach()
-    bboxes[:, 0::2] = torch.clip(bboxes[:, 0::2], 0, 640).cpu().detach()
-    bboxes[:, 1::2] = torch.clip(bboxes[:, 1::2], 0, 640).cpu().detach()
-    return bboxes, labels, scores
+from models.utils import blob, letterbox, path_to_list 
 
 
 class_name = ["person",         "bicycle",    "car",           "motorcycle",    "airplane",     "bus",           "train",
@@ -87,18 +57,27 @@ def main(args: argparse.Namespace) -> None:
         data = Engine(tensor)
         end = time.time()
         print(f"cost {(end - start)*1000}ms")
-        bboxes, ids, scores = postprocess(data)
+        bboxes, scores, ids = det_postprocess(data)
 
         dwdh = dwdh.cpu().int().tolist()
 
         for bbox,id,score in zip(bboxes,ids, scores):
-            cls = class_name[int(id.item())]
+            cls = CLASSES_DET[int(id.item())]
             bbox = bbox.round().int().tolist()
             x1, y1, x2, y2 = bbox
             x1, y1, x2, y2 = (x1 - dwdh[0]) / ratio, (y1 - dwdh[1]) / ratio, (x2 - dwdh[0])/ ratio, (y2- dwdh[1]) / ratio
             color = COLORS[cls]
 
+            text = f'{cls}:{score:.3f}'
+            (_w, _h), _bl = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX,
+                                            0.8, 1)
+            _y1 = min(y1 + 1, draw.shape[0])
+
             cv2.rectangle(draw, (int(x1), int(y1)), (int(x2), int(y2)), color, 2)
+            cv2.rectangle(draw, (int(x1), int(_y1)), (int(x1 + _w), int(_y1 + _h + _bl)),
+                          (0, 0, 255), -1)
+            cv2.putText(draw, text, (int(x1), int(_y1 + _h)), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.75, (255, 255, 255), 2)
 
 
         if args.show:

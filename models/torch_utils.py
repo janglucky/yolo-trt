@@ -79,21 +79,23 @@ def pose_postprocess(
     return bboxes, scores, kpts.reshape(idx.shape[0], -1, 3)
 
 
-def det_postprocess(data: Tuple[Tensor, Tensor, Tensor, Tensor]):
-    assert len(data) == 4
-    iou_thres: float = 0.65  # noqa F841
-    num_dets, bboxes, scores, labels = data[0][0], data[1][0], data[2][
-        0], data[3][0]
-    nums = num_dets.item()
-    if nums == 0:
-        return bboxes.new_zeros((0, 4)), scores.new_zeros(
-            (0, )), labels.new_zeros((0, ))
-    # check score negative
-    scores[scores < 0] = 1 + scores[scores < 0]
-    bboxes = bboxes[:nums]
-    scores = scores[:nums]
-    labels = labels[:nums]
+def det_postprocess(preds, score_thr=0.69):
+    preds = preds.squeeze().permute(1,0)
+    decoded_bboxes = preds[:, :4]
+    decoded_bboxes = xywh2xyxy(decoded_bboxes)
+    cls_scores = preds[:,4:]
+    cls_score_id = cls_scores.amax(1) > score_thr
 
+    ths_scores = cls_scores[cls_score_id,:] # torch.szie[num,80]
+    thr_bboxes = decoded_bboxes[cls_score_id,:] # torch.szie[num,4]
+
+    ths_conf, thr_cls = ths_scores.max(1, keepdim=False) #torch.szie[num],torch.szie[num]
+    keep_idxs = torchvision.ops.nms(thr_bboxes, ths_conf, iou_threshold=0.6)
+    scores = ths_conf[keep_idxs].cpu().detach()
+    labels = thr_cls[keep_idxs].cpu().detach()
+    bboxes = thr_bboxes[keep_idxs].cpu().detach()
+    bboxes[:, 0::2] = torch.clip(bboxes[:, 0::2], 0, 640).cpu().detach()
+    bboxes[:, 1::2] = torch.clip(bboxes[:, 1::2], 0, 640).cpu().detach()
     return bboxes, scores, labels
 
 
