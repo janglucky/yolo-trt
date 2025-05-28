@@ -19,9 +19,10 @@ public:
     void                 copy_from_Mat(const cv::Mat& image, cv::Size& size);
     void                 letterbox(const cv::Mat& image, cv::Mat& out, cv::Size& size);
     void                 infer();
-    void                 postprocess(std::vector<Object>& objs,float score_thres, float iou_thres, int topk, int num_labels);
+    void                 postprocess(std::vector<Object>& objs,float score_thres, float iou_thres, int topk);
     void                 postprocess_pose(std::vector<Object>& objs,float score_thres, float iou_thres, int topk);
-    void                 postprocess_seg(std::vector<Object>& objs,float score_thres, float iou_thres, int topk, int num_labels);
+    void                 postprocess_seg(std::vector<Object>& objs,float score_thres, float iou_thres, int topk);
+    void                 postprocess_obb(std::vector<Object>& objs,float score_thres, float iou_thres, int topk);
     static void          draw_objects(const cv::Mat&                                image,
                                       cv::Mat&                                      res,
                                       const std::vector<Object>&                    objs,
@@ -303,6 +304,82 @@ void YOLOv8::infer()
     cudaStreamSynchronize(this->stream);
 }
 
+void YOLOv8::postprocess_obb(std::vector<Object>& objs, float score_thres = 0.69,float iou_thres=0.85,int topk=100)
+{
+    objs.clear();
+    auto num_channels = this->output_bindings[0].dims.d[1];
+    auto num_anchors  = this->output_bindings[0].dims.d[2];
+    auto num_labels   = num_channels - 5;
+    auto& dw     = this->pparam.dw;
+    auto& dh     = this->pparam.dh;
+    auto& width  = this->pparam.width;
+    auto& height = this->pparam.height;
+    auto& ratio  = this->pparam.ratio;
+
+    std::vector<cv::RotatedRect>    bboxes;
+    std::vector<float>              scores;
+    std::vector<int>                labels;
+    std::vector<int>                indices;
+    std::vector<std::vector<float>> kpss;
+
+
+
+    cv::Mat output = cv::Mat(num_channels, num_anchors, CV_32F, static_cast<float*>(this->host_ptrs[0]));
+    output         = output.t();
+    for (int i = 0; i < num_anchors; i++) {
+        auto row_ptr    = output.row(i).ptr<float>();
+        auto bboxes_ptr = row_ptr;
+        auto scores_ptr = row_ptr + 4;
+        auto max_s_ptr  = std::max_element(scores_ptr, scores_ptr + num_labels);
+        auto angle_ptr  = row_ptr + 4 + num_labels;
+
+        float score = *max_s_ptr;
+        if (score > score_thres) {
+            float x = (*bboxes_ptr++ - dw) * ratio;
+            float y = (*bboxes_ptr++ - dh) * ratio;
+            float w = (*bboxes_ptr++) * ratio;
+            float h = (*bboxes_ptr) * ratio;
+
+            if (w < 1.f || h < 1.f) {
+                continue;
+            }
+
+            x = clamp(x, 0.f, width);
+            y = clamp(y, 0.f, height);
+            w = clamp(w, 0.f, width);
+            h = clamp(h, 0.f, height);
+
+            float angle = *angle_ptr / CV_PI * 180.f;
+
+            cv::RotatedRect bbox;
+            bbox.center.x    = x;
+            bbox.center.y    = y;
+            bbox.size.width  = w;
+            bbox.size.height = h;
+            bbox.angle       = angle;
+
+            bboxes.push_back(bbox);
+            labels.push_back(std::distance(scores_ptr, max_s_ptr));
+            scores.push_back(score);
+        }
+    }
+
+    cv::dnn::NMSBoxes(bboxes, scores, score_thres, iou_thres, indices);
+
+    int cnt = 0;
+    for (auto& i : indices) {
+        if (cnt >= topk) {
+            break;
+        }
+        Object obj;
+        obj.rect  = bboxes[i];
+        obj.prob  = scores[i];
+        obj.label = labels[i];
+        objs.push_back(obj);
+        cnt += 1;
+    }
+}
+
 void YOLOv8::postprocess_pose(std::vector<Object>& objs, float score_thres = 0.69,float iou_thres=0.85,int topk=100)
 {
     objs.clear();
@@ -315,7 +392,7 @@ void YOLOv8::postprocess_pose(std::vector<Object>& objs, float score_thres = 0.6
     auto& height = this->pparam.height;
     auto& ratio  = this->pparam.ratio;
 
-    std::vector<cv::Rect>           bboxes;
+    std::vector<cv::RotatedRect>    bboxes;
     std::vector<float>              scores;
     std::vector<int>                labels;
     std::vector<int>                indices;
@@ -331,21 +408,25 @@ void YOLOv8::postprocess_pose(std::vector<Object>& objs, float score_thres = 0.6
 
         float score = *scores_ptr;
         if (score > score_thres) {
-            float x = *bboxes_ptr++ - dw;
-            float y = *bboxes_ptr++ - dh;
-            float w = *bboxes_ptr++;
-            float h = *bboxes_ptr;
+            float x = (*bboxes_ptr++ - dw) * ratio;
+            float y = (*bboxes_ptr++ - dh) * ratio;
+            float w = (*bboxes_ptr++) * ratio;
+            float h = (*bboxes_ptr) * ratio;
 
-            float x0 = clamp((x - 0.5f * w) * ratio, 0.f, width);
-            float y0 = clamp((y - 0.5f * h) * ratio, 0.f, height);
-            float x1 = clamp((x + 0.5f * w) * ratio, 0.f, width);
-            float y1 = clamp((y + 0.5f * h) * ratio, 0.f, height);
+            if (w < 1.f || h < 1.f) {
+                continue;
+            }
 
-            cv::Rect_<float> bbox;
-            bbox.x      = x0;
-            bbox.y      = y0;
-            bbox.width  = x1 - x0;
-            bbox.height = y1 - y0;
+            x = clamp(x, 0.f, width);
+            y = clamp(y, 0.f, height);
+            w = clamp(w, 0.f, width);
+            h = clamp(h, 0.f, height);
+
+            cv::RotatedRect bbox;
+            bbox.center.x           = x;
+            bbox.center.y           = y;
+            bbox.size.width         = w;
+            bbox.size.height        = h;
             std::vector<float> kps;
             for (int k = 0; k < 17; k++) {
                 float kps_x = (*(kps_ptr + 3 * k) - dw) * ratio;
@@ -381,13 +462,17 @@ void YOLOv8::postprocess_pose(std::vector<Object>& objs, float score_thres = 0.6
         cnt += 1;
     }
 }
-void YOLOv8::postprocess_seg(std::vector<Object>& objs, float score_thres = 0.69,float iou_thres=0.85,int topk=100, int num_labels=80)
+
+void YOLOv8::postprocess_seg(std::vector<Object>& objs, float score_thres = 0.69,float iou_thres=0.85,int topk=100)
 {
     objs.clear();
     auto input_h      = this->input_bindings[0].dims.d[2];
     auto input_w      = this->input_bindings[0].dims.d[3];
     auto num_channels = this->output_bindings[0].dims.d[1];
     auto num_anchors  = this->output_bindings[0].dims.d[2];
+    auto num_labels   = num_channels - 36;
+
+    std::cout << num_labels << std::endl;   
 
     auto seg_channels = this->output_bindings[1].dims.d[1];
     auto seg_h = this->output_bindings[1].dims.d[2];
@@ -399,7 +484,7 @@ void YOLOv8::postprocess_seg(std::vector<Object>& objs, float score_thres = 0.69
     auto& height   = this->pparam.height;
     auto& ratio    = this->pparam.ratio;
 
-    std::vector<cv::Rect> bboxes;
+    std::vector<cv::RotatedRect> bboxes;
     std::vector<float>           scores;
     std::vector<int>             labels;
     std::vector<int>             indices;
@@ -417,16 +502,10 @@ void YOLOv8::postprocess_seg(std::vector<Object>& objs, float score_thres = 0.69
 
         float score = *max_s_ptr;
         if (score > score_thres) {
-            float center_x = *bboxes_ptr++;
-            float center_y = *bboxes_ptr++;
-            float w = *bboxes_ptr++;
-            float h = *bboxes_ptr;
-
-            // 将点模型空间（中心点+宽高）映射到图像空间（左上角+宽高）
-            float x = (center_x - w /2 - dw) * ratio; 
-            float y = (center_y - h /2 - dh) * ratio;
-            w = w * ratio;
-            h = h * ratio;
+            float x = (*bboxes_ptr++ - dw) * ratio;
+            float y = (*bboxes_ptr++ - dh) * ratio;
+            float w = (*bboxes_ptr++) * ratio;
+            float h = (*bboxes_ptr) * ratio;
 
             if (w < 1.f || h < 1.f) {
                 continue;
@@ -437,7 +516,11 @@ void YOLOv8::postprocess_seg(std::vector<Object>& objs, float score_thres = 0.69
             w = clamp(w, 0.f, width);
             h = clamp(h, 0.f, height);
 
-            cv::Rect bbox(x,y,w,h);
+            cv::RotatedRect bbox;
+            bbox.center.x    = x;
+            bbox.center.y    = y;
+            bbox.size.width  = w;
+            bbox.size.height = h;
             cv::Mat mask_conf = cv::Mat(1, seg_channels, CV_32F, maskconf_ptr);
             
             mask_confs.push_back(mask_conf);
@@ -482,18 +565,25 @@ void YOLOv8::postprocess_seg(std::vector<Object>& objs, float score_thres = 0.69
             dest = 1.0 / (1.0 + dest);
             dest = dest(roi);
             cv::resize(dest, mask, cv::Size((int)width, (int)height), cv::INTER_LINEAR);
-            objs[i].mask = mask(objs[i].rect) > 0.5f;
+            
+            int center_x = (int)objs[i].rect.center.x;
+            int center_y = (int)objs[i].rect.center.y;
+            int w        = (int)objs[i].rect.size.width;
+            int h        = (int)objs[i].rect.size.height;
+            cv::Rect rec(center_x - w/2, center_y - h/2, w, h);
+            objs[i].mask = mask(rec) > 0.5f;
         }
 
     }
 }
 
 
-void YOLOv8::postprocess(std::vector<Object>& objs, float score_thres = 0.69,float iou_thres=0.85,int topk=100, int num_labels=80)
+void YOLOv8::postprocess(std::vector<Object>& objs, float score_thres = 0.69,float iou_thres=0.85,int topk=100)
 {
     objs.clear();
     auto num_channels = this->output_bindings[0].dims.d[1];
     auto num_anchors  = this->output_bindings[0].dims.d[2];
+    auto num_labels   = num_channels - 4;
 
     auto& dw       = this->pparam.dw;
     auto& dh       = this->pparam.dh;
@@ -501,7 +591,7 @@ void YOLOv8::postprocess(std::vector<Object>& objs, float score_thres = 0.69,flo
     auto& height   = this->pparam.height;
     auto& ratio    = this->pparam.ratio;
 
-    std::vector<cv::Rect> bboxes;
+    std::vector<cv::RotatedRect> bboxes;
     std::vector<float>           scores;
     std::vector<int>             labels;
     std::vector<int>             indices;
@@ -516,16 +606,11 @@ void YOLOv8::postprocess(std::vector<Object>& objs, float score_thres = 0.69,flo
 
         float score = *max_s_ptr;
         if (score > score_thres) {
-            float center_x = *bboxes_ptr++;
-            float center_y = *bboxes_ptr++;
-            float w = *bboxes_ptr++;
-            float h = *bboxes_ptr;
+            float x = (*bboxes_ptr++ - dw) * ratio;
+            float y = (*bboxes_ptr++ - dh) * ratio;
+            float w = (*bboxes_ptr++) * ratio;
+            float h = (*bboxes_ptr) * ratio;
 
-            // 将点模型空间（中心点+宽高）映射到图像空间（左上角+宽高）
-            float x = (center_x - w /2 - dw) * ratio; 
-            float y = (center_y - h /2 - dh) * ratio;
-            w = w * ratio;
-            h = h * ratio;
 
             if (w < 1.f || h < 1.f) {
                 continue;
@@ -536,7 +621,11 @@ void YOLOv8::postprocess(std::vector<Object>& objs, float score_thres = 0.69,flo
             w = clamp(w, 0.f, width);
             h = clamp(h, 0.f, height);
 
-            cv::Rect bbox(x,y,w,h);
+            cv::RotatedRect bbox;
+            bbox.center.x    = x;
+            bbox.center.y    = y;
+            bbox.size.width  = w;
+            bbox.size.height = h;
 
             bboxes.push_back(bbox);
             labels.push_back(std::distance(scores_ptr, max_s_ptr));
@@ -570,7 +659,11 @@ void YOLOv8::draw_poses(const cv::Mat&                                image,
     res = image.clone();
     const int num_point = 17;
     for (auto& obj : objs) {
-        cv::rectangle(res, obj.rect, {0, 0, 255}, 2);
+        // cv::rectangle(res, obj.rect, {0, 0, 255}, 2);
+        cv::Mat points;
+        cv::boxPoints(obj.rect, points);
+        points.convertTo(points, CV_32S);
+        cv::polylines(res, points, true, {0, 0, 255}, 2);
 
         char text[256];
         sprintf(text, "person %.1f%%", obj.prob * 100);
@@ -578,8 +671,12 @@ void YOLOv8::draw_poses(const cv::Mat&                                image,
         int      baseLine   = 0;
         cv::Size label_size = cv::getTextSize(text, cv::FONT_HERSHEY_SIMPLEX, 0.4, 1, &baseLine);
 
-        int x = (int)obj.rect.x;
-        int y = (int)obj.rect.y + 1;
+        int x = (int)obj.rect.center.x;
+        int y = (int)obj.rect.center.y + 1;
+        int w = (int)obj.rect.size.width;
+        int h = (int)obj.rect.size.height;
+        x = x - w / 2;
+        y = y - h / 2;
 
         if (y > res.rows)
             y = res.rows;
@@ -631,17 +728,30 @@ void YOLOv8::draw_masks(const cv::Mat&                               image,
         cv::Scalar color = cv::Scalar(COLORS[idx][0], COLORS[idx][1], COLORS[idx][2]);
         cv::Scalar mask_color =
             cv::Scalar(MASK_COLORS[idx % 20][0], MASK_COLORS[idx % 20][1], MASK_COLORS[idx % 20][2]);
-        cv::rectangle(res, obj.rect, color, 2);
+
+        cv::Mat points;
+        cv::boxPoints(obj.rect, points);
+        points.convertTo(points, CV_32S);
+        cv::polylines(res, points, true, color, 2);
+
 
         char text[256];
         sprintf(text, "%s %.1f%%", CLASS_NAMES[obj.label].c_str(), obj.prob * 100);
-        mask(obj.rect).setTo(mask_color, obj.mask);
+
+        int center_x = (int)obj.rect.center.x;
+        int center_y = (int)obj.rect.center.y;
+        int w        = (int)obj.rect.size.width;
+        int h        = (int)obj.rect.size.height;
+
+        cv::Rect rec(center_x - w/2, center_y - h/2, w, h);
+        mask(rec).setTo(mask_color, obj.mask);
 
         int      baseLine   = 0;
         cv::Size label_size = cv::getTextSize(text, cv::FONT_HERSHEY_SIMPLEX, 0.4, 1, &baseLine);
 
-        int x = (int)obj.rect.x;
-        int y = (int)obj.rect.y + 1;
+        int x = center_x - w / 2;
+        int y = center_y + 1 - h / 2;
+
 
         if (y > res.rows) {
             y = res.rows;
@@ -663,7 +773,12 @@ void YOLOv8::draw_objects(const cv::Mat&                                image,
     res = image.clone();
     for (auto& obj : objs) {
         cv::Scalar color = cv::Scalar(COLORS[obj.label][0], COLORS[obj.label][1], COLORS[obj.label][2]);
-        cv::rectangle(res, obj.rect, color, 2);
+        // cv::rectangle(res, obj.rect, color, 2);
+        // std::cout << "(("<<obj.rect.center.x<<","<< obj.rect.center.y << "),(" << obj.rect.size.width <<","<< obj.rect.size.height <<"),"<<obj.rect.angle <<")"<<std::endl;
+        cv::Mat points;
+        cv::boxPoints(obj.rect, points);
+        points.convertTo(points, CV_32S);
+        cv::polylines(res, points, true, color, 2);
 
         char text[256];
         sprintf(text, "%s %.1f%%", CLASS_NAMES[obj.label].c_str(), obj.prob * 100);
@@ -671,8 +786,13 @@ void YOLOv8::draw_objects(const cv::Mat&                                image,
         int      baseLine   = 0;
         cv::Size label_size = cv::getTextSize(text, cv::FONT_HERSHEY_SIMPLEX, 0.4, 1, &baseLine);
 
-        int x = (int)obj.rect.x;
-        int y = (int)obj.rect.y + 1;
+        int x = (int)obj.rect.center.x;
+        int y = (int)obj.rect.center.y + 1;
+        int w = (int)obj.rect.size.width;
+        int h = (int)obj.rect.size.height;
+
+        x = x - w / 2;
+        y = y - h / 2;
 
         if (y > res.rows) {
             y = res.rows;

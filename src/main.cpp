@@ -21,6 +21,38 @@ const std::vector<std::string> CLASS_NAMES = {
     "toaster",        "sink",       "refrigerator",  "book",          "clock",        "vase",          "scissors",
     "teddy bear",     "hair drier", "toothbrush"};
 
+const std::vector<std::string> OBB_CLASS_NAMES = {"plane",
+                                            "ship",
+                                            "storage tank",
+                                            "baseball diamond",
+                                            "tennis court",
+                                            "basketball court",
+                                            "ground track field",
+                                            "harbor",
+                                            "bridge",
+                                            "large vehicle",
+                                            "small vehicle",
+                                            "helicopter",
+                                            "roundabout",
+                                            "soccer ball field",
+                                            "swimming pool"};
+
+const std::vector<std::vector<unsigned int>> OBB_COLORS = {{0, 114, 189},
+                                                       {217, 83, 25},
+                                                       {237, 177, 32},
+                                                       {126, 47, 142},
+                                                       {119, 172, 48},
+                                                       {77, 190, 238},
+                                                       {162, 20, 47},
+                                                       {76, 76, 76},
+                                                       {153, 153, 153},
+                                                       {255, 0, 0},
+                                                       {255, 128, 0},
+                                                       {191, 191, 0},
+                                                       {0, 255, 0},
+                                                       {0, 0, 255},
+                                                       {170, 0, 255}};
+
 const std::vector<std::vector<unsigned int>> COLORS = {
     {0, 114, 189},   {217, 83, 25},   {237, 177, 32},  {126, 47, 142},  {119, 172, 48},  {77, 190, 238},
     {162, 20, 47},   {76, 76, 76},    {153, 153, 153}, {255, 0, 0},     {255, 128, 0},   {191, 191, 0},
@@ -104,6 +136,7 @@ enum TASK{
     DETE,
     SEGM,
     POSE,
+    OBB,
     UNKOWN
 };
 
@@ -114,6 +147,8 @@ int get_task(std::string t) {
         return SEGM;
     } else if(t == "pose") {
         return POSE;
+    } else if(t == "obb") {
+        return OBB;
     } else {
         return UNKOWN;
     }
@@ -159,10 +194,9 @@ int main(int argc, char** argv)
     }
 
     cv::Mat             res, image;
-    cv::Size            size = cv::Size{640, 640};
     std::vector<Object> objs;
 
-    cv::namedWindow("result", cv::WINDOW_AUTOSIZE);
+    // cv::namedWindow("result", cv::WINDOW_AUTOSIZE);
 
     if (isVideo) {
         cv::VideoCapture cap(path);
@@ -173,7 +207,7 @@ int main(int argc, char** argv)
         }
         while (cap.read(image)) {
             objs.clear();
-            yolov8->copy_from_Mat(image, size);
+            yolov8->copy_from_Mat(image);
             auto start = std::chrono::system_clock::now();
             yolov8->infer();
             auto end = std::chrono::system_clock::now();
@@ -190,6 +224,10 @@ int main(int argc, char** argv)
             case POSE:
                 yolov8->postprocess_pose(objs);
                 yolov8->draw_poses(image, res, objs, SKELETON, KPS_COLORS, LIMB_COLORS);
+            case OBB:
+                yolov8->postprocess_obb(objs);
+                yolov8->draw_objects(image, res, objs, OBB_CLASS_NAMES, OBB_COLORS);
+                break;
             default:
                 break;
             }
@@ -206,7 +244,7 @@ int main(int argc, char** argv)
         for (auto& p : imagePathList) {
             objs.clear();
             image = cv::imread(p);
-            yolov8->copy_from_Mat(image, size);
+            yolov8->copy_from_Mat(image);
             auto start = std::chrono::system_clock::now();
             yolov8->infer();
             auto end = std::chrono::system_clock::now();
@@ -224,6 +262,10 @@ int main(int argc, char** argv)
                 yolov8->postprocess_pose(objs);
                 yolov8->draw_poses(image, res, objs, SKELETON, KPS_COLORS, LIMB_COLORS);
                 break;
+            case OBB:
+                yolov8->postprocess_obb(objs, 0.69, 0.95);
+                yolov8->draw_objects(image, res, objs, OBB_CLASS_NAMES, OBB_COLORS);
+                break;
             default:
                 break;
             }
@@ -234,7 +276,7 @@ int main(int argc, char** argv)
 
         }
     }
-    cv::destroyAllWindows();
+    // cv::destroyAllWindows();
     delete yolov8;
     return 0;
 }
