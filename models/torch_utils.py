@@ -79,6 +79,65 @@ def pose_postprocess(
     return bboxes, scores, kpts.reshape(idx.shape[0], -1, 3)
 
 
+def decode(output, anchors, grid_size):
+    # 获取预测的偏移量和尺寸调整量
+    delta_x = output[..., 0]
+    delta_y = output[..., 1]
+
+    delta_w = output[..., 2]
+    delta_h = output[..., 3]
+
+    box_confidence = output[...,4].sigmoid()
+    class_probs = output[...,5:].sigmoid()
+
+    x_anchor, y_anchor = torch.meshgrid(torch.arange(grid_size), torch.arange(grid_size))
+    x_anchor = x_anchor.unsqueeze(0).unsqueeze(0).float()
+    y_anchor = y_anchor.unsqueeze(0).unsqueeze(0).float()
+
+    print(x_anchor.shape, delta_x.shape)
+    # 计算实际的边界框坐标和尺寸
+    x = x_anchor + delta_x
+    y = y_anchor + delta_y
+
+    w = anchors[:, 0].unsqueeze(-1).unsqueeze(-1) * torch.exp(delta_w)
+    h = anchors[:, 1].unsqueeze(-1).unsqueeze(-1) * torch.exp(delta_h)
+
+    # print(anchors.shape)
+    # print(w.shape)
+    # print(h.shape)
+    # 计算边界框的左上角和右下角坐标
+    x1 = x - w / 2
+    y1 = y - h / 2
+    x2 = x + w / 2
+    y2 = y + h / 2
+    # print(pred.shape)
+    bboxes = torch.stack([x1, y1, x2, y2], dim=-1)
+    return bboxes, box_confidence, class_probs
+
+def yolov5_poseprocess(preds, anchors, grid_sizes, score_thr=0.69):
+    bbox = []
+    score = []
+    label = []
+    for pred, anchor, grid_size  in zip(preds, anchors, grid_sizes):
+        pred = pred.cpu().detach()
+        anchor = torch.Tensor(anchor)
+        bboxes, bbox_confidences, class_probs = decode(pred, anchor, grid_size)
+        class_scores, labels =  class_probs.max(dim=-1)
+        scores =  class_scores * bbox_confidences
+
+        score_id = scores > score_thr
+        bbox.append(bboxes[score_id].view(-1,4))
+        label.append(labels[score_id].view(-1))
+        score.append(scores[score_id].view(-1))
+
+    # pred
+    bbox = torch.cat(bbox)
+    label = torch.cat(label)
+    score = torch.cat(score)
+    nms_indices = torchvision.ops.nms(bbox, score, 0.8)
+
+    return bbox[nms_indices], score[nms_indices], label[nms_indices]
+
 def det_postprocess(preds, score_thr=0.69):
     preds = preds.squeeze().permute(1,0)
     decoded_bboxes = preds[:, :4]

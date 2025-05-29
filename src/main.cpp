@@ -263,7 +263,7 @@ int main(int argc, char** argv)
                 yolov8->draw_poses(image, res, objs, SKELETON, KPS_COLORS, LIMB_COLORS);
                 break;
             case OBB:
-                yolov8->postprocess_obb(objs, 0.69, 0.95);
+                yolov8->postprocess_obb(objs, 0.65, 0.25);
                 yolov8->draw_objects(image, res, objs, OBB_CLASS_NAMES, OBB_COLORS);
                 break;
             default:
